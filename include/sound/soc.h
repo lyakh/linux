@@ -1150,6 +1150,9 @@ struct snd_soc_pcm_runtime {
 	/* bit field */
 	unsigned int dev_registered:1;
 	unsigned int pop_wait:1;
+
+	/* private data - core does not touch */
+	void *private;
 };
 
 /* mixer control */
