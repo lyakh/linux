@@ -230,6 +230,7 @@ int snd_sof_load_firmware_raw(struct snd_sof_dev *sdev)
 
 	return request_firmware(&plat_data->fw, fw_filename, sdev->dev);
 }
+EXPORT_SYMBOL(snd_sof_load_firmware_raw);
 
 int snd_sof_load_firmware_memcpy(struct snd_sof_dev *sdev)
 {
