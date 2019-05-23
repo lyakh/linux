@@ -280,10 +280,12 @@ int hda_dsp_stream_hw_params(struct snd_sof_dev *sdev,
 		return -ENODEV;
 	}
 
+	spin_lock_irq(&bus->reg_lock);
 	/* decouple host and link DMA */
 	mask = 0x1 << hstream->index;
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_PP_BAR, SOF_HDA_REG_PP_PPCTL,
 				mask, mask);
+	spin_unlock_irq(&bus->reg_lock);
 
 	if (!dmab) {
 		dev_err(sdev->dev, "error: no dma buffer allocated!\n");
@@ -381,6 +383,7 @@ int hda_dsp_stream_hw_params(struct snd_sof_dev *sdev,
 	 *    enable decoupled mode
 	 */
 
+	spin_lock_irq(&bus->reg_lock);
 	/* couple host and link DMA, disable DSP features */
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_PP_BAR, SOF_HDA_REG_PP_PPCTL,
 				mask, 0);
@@ -394,6 +397,7 @@ int hda_dsp_stream_hw_params(struct snd_sof_dev *sdev,
 	/* decouple host and link DMA, enable DSP features */
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_PP_BAR, SOF_HDA_REG_PP_PPCTL,
 				mask, mask);
+	spin_unlock_irq(&bus->reg_lock);
 
 	/* program last valid index */
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_HDA_BAR,
