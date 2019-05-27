@@ -10,6 +10,7 @@
 
 #include <linux/module.h>
 #include <sound/hdaudio_ext.h>
+#include <sound/hda_register.h>
 #include <sound/hda_codec.h>
 #include <sound/hda_i915.h>
 #include <sound/sof.h>
@@ -37,6 +38,27 @@ static void hda_codec_load_module(struct hda_codec *codec)
 static void hda_codec_load_module(struct hda_codec *codec) {}
 #endif
 
+/* check jack status after resuming from suspend mode */
+void hda_codec_jack_check(struct snd_sof_dev *sdev, int status)
+{
+	struct hda_bus *hbus = sof_to_hbus(sdev);
+	struct hdac_bus *bus = sof_to_bus(sdev);
+	struct hda_codec *codec;
+
+	/* disable controller Wake Up event*/
+	snd_hdac_chip_writew(bus, WAKEEN,
+			     snd_hdac_chip_readw(bus, WAKEEN) &
+			     ~STATESTS_INT_MASK);
+
+	list_for_each_codec(codec, hbus)
+		if (status & (1 << codec->core.addr))
+			schedule_delayed_work(&codec->jackpoll_work,
+					      codec->jackpoll_interval);
+}
+EXPORT_SYMBOL(hda_codec_jack_check);
+#else
+void hda_codec_jack_check(struct snd_sof_dev *sdev, int status) {}
+EXPORT_SYMBOL(hda_codec_jack_check);
 #endif /* CONFIG_SND_SOC_SOF_HDA_AUDIO_CODEC */
 
 /* probe individual codec */

@@ -548,7 +548,7 @@ void sof_hda_bus_init(struct hdac_bus *bus, struct device *dev,
  * HDA Codec operations.
  */
 int hda_codec_probe_bus(struct snd_sof_dev *sdev);
-
+void hda_codec_jack_check(struct snd_sof_dev *sdev, int status);
 #endif /* CONFIG_SND_SOC_SOF_HDA */
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA) && IS_ENABLED(CONFIG_SND_SOC_HDAC_HDMI)
