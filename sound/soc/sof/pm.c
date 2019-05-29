@@ -338,6 +338,12 @@ static int sof_suspend(struct device *dev, bool runtime_suspend)
 	if (!sof_ops(sdev)->suspend)
 		return 0;
 
+	if (runtime_suspend) {
+		ret = snd_sof_dsp_runtime_idle(sdev);
+		if (ret)
+			return ret;
+	}
+
 	/* release trace */
 	snd_sof_release_trace(sdev);
 
