@@ -399,6 +399,74 @@ static const struct sof_intel_dsp_desc
 	return chip_info;
 }
 
+void hda_free_irq(struct snd_sof_dev *sdev)
+{
+	struct hdac_bus *bus = sof_to_bus(sdev);
+	struct pci_dev *pci = to_pci_dev(sdev->dev);
+	struct sof_intel_hda_dev *hdev = sdev->pdata->hw_pdata;
+
+	free_irq(sdev->ipc_irq, sdev);
+	free_irq(hdev->irq, bus);
+	if (sdev->msi_enabled)
+		pci_free_irq_vectors(pci);
+}
+
+int hda_request_irq(struct snd_sof_dev *sdev)
+{
+	struct hdac_bus *bus = sof_to_bus(sdev);
+	struct pci_dev *pci = to_pci_dev(sdev->dev);
+	struct sof_intel_hda_dev *hdev = sdev->pdata->hw_pdata;
+	int ret;
+
+	/*
+	 * register our IRQ
+	 * let's try to enable msi firstly
+	 * if it fails, use legacy interrupt mode
+	 * TODO: support interrupt mode selection with kernel parameter
+	 *       support msi multiple vectors
+	 */
+	ret = pci_alloc_irq_vectors(pci, 1, 1, PCI_IRQ_LEGACY);
+	if (ret < 0) {
+		dev_err(sdev->dev, "error: IRQ vector allocation failed: %d\n",
+			ret);
+		return ret;
+	}
+
+	hdev->irq = pci->irq;
+	sdev->ipc_irq = pci->irq;
+	sdev->msi_enabled = 0;
+
+	dev_dbg(sdev->dev, "using HDA IRQ %d\n", hdev->irq);
+	ret = request_threaded_irq(hdev->irq, hda_dsp_stream_interrupt,
+				   hda_dsp_stream_threaded_handler,
+				   IRQF_SHARED, "AudioHDA", bus);
+	if (ret < 0) {
+		dev_err(sdev->dev, "error: failed to register HDA IRQ %d\n",
+			hdev->irq);
+		goto free_irq_vector;
+	}
+
+	dev_dbg(sdev->dev, "using IPC IRQ %d\n", sdev->ipc_irq);
+	ret = request_threaded_irq(sdev->ipc_irq, hda_dsp_ipc_irq_handler,
+				   sof_ops(sdev)->irq_thread, IRQF_SHARED,
+				   "AudioDSP", sdev);
+	if (ret < 0) {
+		dev_err(sdev->dev, "error: failed to register IPC IRQ %d\n",
+			sdev->ipc_irq);
+		goto free_hda_irq;
+	}
+
+	return 0;
+
+free_hda_irq:
+	free_irq(hdev->irq, bus);
+free_irq_vector:
+	if (sdev->msi_enabled)
+		pci_free_irq_vectors(pci);
+
+	return ret;
+}
+
 int hda_dsp_probe(struct snd_sof_dev *sdev)
 {
 	struct pci_dev *pci = to_pci_dev(sdev->dev);
@@ -493,50 +561,9 @@ int hda_dsp_probe(struct snd_sof_dev *sdev)
 		goto free_streams;
 	}
 
-	/*
-	 * register our IRQ
-	 * let's try to enable msi firstly
-	 * if it fails, use legacy interrupt mode
-	 * TODO: support interrupt mode selection with kernel parameter
-	 *       support msi multiple vectors
-	 */
-	ret = pci_alloc_irq_vectors(pci, 1, 1, PCI_IRQ_MSI);
-	if (ret < 0) {
-		dev_info(sdev->dev, "use legacy interrupt mode\n");
-		/*
-		 * in IO-APIC mode, hda->irq and ipc_irq are using the same
-		 * irq number of pci->irq
-		 */
-		hdev->irq = pci->irq;
-		sdev->ipc_irq = pci->irq;
-		sdev->msi_enabled = 0;
-	} else {
-		dev_info(sdev->dev, "use msi interrupt mode\n");
-		hdev->irq = pci_irq_vector(pci, 0);
-		/* ipc irq number is the same of hda irq */
-		sdev->ipc_irq = hdev->irq;
-		sdev->msi_enabled = 1;
-	}
-
-	dev_dbg(sdev->dev, "using HDA IRQ %d\n", hdev->irq);
-	ret = request_threaded_irq(hdev->irq, hda_dsp_stream_interrupt,
-				   hda_dsp_stream_threaded_handler,
-				   IRQF_SHARED, "AudioHDA", bus);
-	if (ret < 0) {
-		dev_err(sdev->dev, "error: failed to register HDA IRQ %d\n",
-			hdev->irq);
-		goto free_irq_vector;
-	}
-
-	dev_dbg(sdev->dev, "using IPC IRQ %d\n", sdev->ipc_irq);
-	ret = request_threaded_irq(sdev->ipc_irq, hda_dsp_ipc_irq_handler,
-				   sof_ops(sdev)->irq_thread, IRQF_SHARED,
-				   "AudioDSP", sdev);
-	if (ret < 0) {
-		dev_err(sdev->dev, "error: failed to register IPC IRQ %d\n",
-			sdev->ipc_irq);
-		goto free_hda_irq;
-	}
+	ret = hda_request_irq(sdev);
+	if (ret < 0)
+		goto free_streams;
 
 	pci_set_master(pci);
 	synchronize_irq(pci->irq);
@@ -565,12 +592,7 @@ int hda_dsp_probe(struct snd_sof_dev *sdev)
 	return 0;
 
 free_ipc_irq:
-	free_irq(sdev->ipc_irq, sdev);
-free_hda_irq:
-	free_irq(hdev->irq, bus);
-free_irq_vector:
-	if (sdev->msi_enabled)
-		pci_free_irq_vectors(pci);
+	hda_free_irq(sdev);
 free_streams:
 	hda_dsp_stream_free(sdev);
 /* dsp_unmap: not currently used */
@@ -585,7 +607,6 @@ int hda_dsp_remove(struct snd_sof_dev *sdev)
 {
 	struct sof_intel_hda_dev *hda = sdev->pdata->hw_pdata;
 	struct hdac_bus *bus = sof_to_bus(sdev);
-	struct pci_dev *pci = to_pci_dev(sdev->dev);
 	const struct sof_intel_dsp_desc *chip = hda->desc;
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA)
@@ -612,10 +633,7 @@ int hda_dsp_remove(struct snd_sof_dev *sdev)
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_PP_BAR, SOF_HDA_REG_PP_PPCTL,
 				SOF_HDA_PPCTL_GPROCEN, 0);
 
-	free_irq(sdev->ipc_irq, sdev);
-	free_irq(hda->irq, bus);
-	if (sdev->msi_enabled)
-		pci_free_irq_vectors(pci);
+	hda_free_irq(sdev);
 
 	hda_dsp_stream_free(sdev);
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA)
