@@ -329,6 +329,8 @@ static int hda_suspend(struct snd_sof_dev *sdev, int state,
 	/* disable hda bus irq and streams */
 	hda_dsp_ctrl_stop_chip(sdev);
 
+	hda_dsp_free_irq(sdev);
+
 	/* disable LP retention mode */
 	snd_sof_pci_update_bits(sdev, PCI_PGCTL,
 				PCI_PGCTL_LSRMD_MASK, PCI_PGCTL_LSRMD_MASK);
@@ -426,7 +428,7 @@ static int hda_resume(struct snd_sof_dev *sdev, bool runtime_resume)
 	hda_dsp_ctrl_ppcap_enable(sdev, true);
 	hda_dsp_ctrl_ppcap_int_enable(sdev, true);
 
-	return 0;
+	return hda_dsp_request_irq(sdev);
 }
 
 int hda_dsp_resume(struct snd_sof_dev *sdev)
