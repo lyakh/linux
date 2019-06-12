@@ -288,7 +288,9 @@ static int hda_suspend(struct snd_sof_dev *sdev, int state,
 	struct sof_intel_hda_dev *hda = sdev->pdata->hw_pdata;
 	const struct sof_intel_dsp_desc *chip = hda->desc;
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA)
+	struct hda_bus *hbus = sof_to_hbus(sdev);
 	struct hdac_bus *bus = sof_to_bus(sdev);
+	struct hda_codec *codec;
 #endif
 	int ret;
 
@@ -296,11 +298,17 @@ static int hda_suspend(struct snd_sof_dev *sdev, int state,
 	hda_dsp_ipc_int_disable(sdev);
 
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA)
-	if (IS_ENABLED(CONFIG_SND_SOC_SOF_HDA_AUDIO_CODEC) && runtime_suspend)
+	if (IS_ENABLED(CONFIG_SND_SOC_SOF_HDA_AUDIO_CODEC) && runtime_suspend) {
+		unsigned int mask = 0;
+
+		list_for_each_codec(codec, hbus)
+			if (codec->jacktbl.used)
+				mask |= BIT(codec->core.addr);
+
 		/* enable controller wake up event */
 		snd_hdac_chip_writew(bus, WAKEEN,
-				     snd_hdac_chip_readw(bus, WAKEEN) |
-				     hda->hda_codec_mask);
+				     snd_hdac_chip_readw(bus, WAKEEN) | mask);
+	}
 
 	/* power down all hda link */
 	snd_hdac_ext_bus_link_power_down_all(bus);
@@ -341,7 +349,7 @@ static int hda_resume(struct snd_sof_dev *sdev, bool runtime_resume)
 #if IS_ENABLED(CONFIG_SND_SOC_SOF_HDA)
 	struct hdac_bus *bus = sof_to_bus(sdev);
 	struct hdac_ext_link *hlink = NULL;
-	int status;
+	u32 status;
 #endif
 	int ret;
 
