@@ -83,7 +83,7 @@ void snd_sof_pcm_period_elapsed(struct snd_pcm_substream *substream)
 	}
 
 	/*
-	 * snd_pcm_period_elapsed() can be called in interrupt context
+	 * snd_pcm_period_elapsed() can be called in interrupt thread context
 	 * before IRQ_HANDLED is returned. Inside snd_pcm_period_elapsed(),
 	 * when the PCM is done draining or xrun happened, a STOP IPC will
 	 * then be sent and this IPC will hit IPC timeout.
@@ -708,6 +708,7 @@ static int sof_pcm_probe(struct snd_soc_component *component)
 
 	/* load the default topology */
 	sdev->component = component;
+	sdev->card = component->card;
 
 	tplg_filename = devm_kasprintf(sdev->dev, GFP_KERNEL,
 				       "%s/%s",

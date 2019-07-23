@@ -392,6 +392,9 @@ static int __init acrn_hvlog_init(void)
 		return ret;
 	}
 
+//	pr_info("%s().%d\n", __func__, __LINE__);
+//	return 0;
+
 	/* If error happens for last hvlog devs setup, just print out an warn */
 	ret = init_hvlog_dev(last_logbuf, SBUF_LAST_HVLOG);
 	if (ret)

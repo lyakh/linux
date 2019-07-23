@@ -43,12 +43,12 @@
 #define VIRTIO_ID_INPUT        18 /* virtio input */
 #define VIRTIO_ID_VSOCK        19 /* virtio vsock transport */
 #define VIRTIO_ID_CRYPTO       20 /* virtio crypto */
+#define VIRTIO_ID_AUDIO        21 /* virtio audio */
 
 #ifdef CONFIG_ACRN_VIRTIO_DEVICES
 /* ACRN virtio device types */
 #define	VIRTIO_ID_RPMB		0xFFFF
 #define	VIRTIO_ID_HECI		0xFFFE
-#define	VIRTIO_ID_AUDIO		0xFFFD
 #define	VIRTIO_ID_IPU		0xFFFC
 #define	VIRTIO_ID_TSN		0xFFFB
 #define	VIRTIO_ID_HYPERDMABUF	0xFFFA

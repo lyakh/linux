@@ -7,9 +7,16 @@ snd-sof-pci-objs := sof-pci-dev.o
 snd-sof-acpi-objs := sof-acpi-dev.o
 snd-sof-nocodec-objs := nocodec.o
 
+ifdef CONFIG_SND_SOC_SOF_VIRTIO_BE
+snd-sof-objs += virtio-be.o virtio-miscdev.o
+endif
+
+ifdef CONFIG_SND_SOC_SOF_VIRTIO_FE
+snd-sof-objs += virtio-fe.o
+endif
+
 obj-$(CONFIG_SND_SOC_SOF) += snd-sof.o
 obj-$(CONFIG_SND_SOC_SOF_NOCODEC) += snd-sof-nocodec.o
-
 
 obj-$(CONFIG_SND_SOC_SOF_ACPI) += sof-acpi-dev.o
 obj-$(CONFIG_SND_SOC_SOF_PCI) += sof-pci-dev.o

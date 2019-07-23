@@ -56,6 +56,19 @@
 #define SOF_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE | \
 	SNDRV_PCM_FMTBIT_S32_LE | SNDRV_PCM_FMTBIT_FLOAT)
 
+/* The maximum number of components a virtio user vFE driver can use */
+#define SOF_VIRTIO_MAX_UOS_COMPS	1000
+
+#define SOF_VIRTIO_COMP_ID_UNASSIGNED	0xffffffff
+
+/*
+ * in virtio iovec array:
+ *  iovec[0]: the ipc message data between vFE and vBE
+ *  iovec[1]: the ipc reply data between vFE and vBE
+ */
+#define SOF_VIRTIO_IPC_MSG 0
+#define SOF_VIRTIO_IPC_REPLY 1
+
 struct snd_sof_dev;
 struct snd_sof_ipc_msg;
 struct snd_sof_ipc;
@@ -338,6 +351,14 @@ struct snd_sof_dai {
 };
 
 /*
+ * in virtio iovec array:
+ *  iovec[0]: the ipc message data between vFE and vBE
+ *  iovec[1]: the ipc reply data between vFE and vBE
+ */
+#define SOF_VIRTIO_IPC_MSG 0
+#define SOF_VIRTIO_IPC_REPLY 1
+
+/*
  * SOF Device Level.
  */
 struct snd_sof_dev {
@@ -350,6 +371,7 @@ struct snd_sof_dev {
 	 * can't use const
 	 */
 	struct snd_soc_component_driver plat_drv;
+	struct snd_soc_card *card;
 
 	/* DSP firmware boot */
 	wait_queue_head_t boot_wait;
@@ -408,6 +430,11 @@ struct snd_sof_dev {
 	/* Wait queue for code loading */
 	wait_queue_head_t waitq;
 	int code_loading;
+
+	/* virtio for BE and FE */
+	struct list_head vbe_list;
+	struct sof_vfe *vfe;
+	bool is_vfe;
 
 	/* DMA for Trace */
 	struct snd_dma_buffer dmatb;
@@ -554,10 +581,34 @@ void snd_sof_get_status(struct snd_sof_dev *sdev, u32 panic_code,
 			void *stack, size_t stack_words);
 int snd_sof_init_trace_ipc(struct snd_sof_dev *sdev);
 
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_VIRTIO_BE)
+int sof_virtio_miscdev_register(struct snd_sof_dev *sdev);
+int sof_virtio_miscdev_unregister(void);
+int sof_vbe_update_guest_posn(struct snd_sof_dev *sdev,
+			      struct sof_ipc_stream_posn *posn);
+#else
+static inline int sof_virtio_miscdev_register(struct snd_sof_dev *sdev)
+{
+	return 0;
+}
+
+static inline int sof_virtio_miscdev_unregister(void)
+{
+	return 0;
+}
+
+static inline int sof_vbe_update_guest_posn(struct snd_sof_dev *sdev,
+					    struct sof_ipc_stream_posn *posn)
+{
+	return 0;
+}
+#endif
+
 /*
  * Platform specific ops.
  */
 extern struct snd_compr_ops sof_compressed_ops;
+extern struct snd_sof_dsp_ops snd_sof_virtio_fe_ops;
 
 /*
  * Kcontrols.

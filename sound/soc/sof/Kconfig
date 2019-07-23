@@ -69,6 +69,31 @@ config SND_SOC_SOF_STRICT_ABI_CHECKS
 	  If you are not involved in SOF releases and CI development
 	  select "N".
 
+choice
+	prompt "Virtualisation role"
+	default SND_SOC_SOF_VIRTIO_NONE
+	depends on VIRTIO
+	---help---
+	  If this kernel should be used in a virtualised environment, select
+	  which role it will be performing.
+
+config SND_SOC_SOF_VIRTIO_NONE
+	bool "None"
+	---help---
+	  No virtualisation
+
+config SND_SOC_SOF_VIRTIO_BE
+	bool "Host"
+	---help---
+	  Host in a virtualised set up
+
+config SND_SOC_SOF_VIRTIO_FE
+	bool "Guest"
+	---help---
+	  Guest in a virtualised set up
+
+endchoice
+
 config SND_SOC_SOF_DEBUG
 	bool "SOF debugging features"
 	help
