@@ -21,15 +21,4 @@
 struct snd_sof_dev;
 struct snd_sof_pdata;
 
-/* Virtio Frontend */
-#if IS_ENABLED(CONFIG_SND_SOC_SOF_VIRTIO_FE)
-void sof_virtio_vfe_init(struct snd_sof_dev *sdev,
-			 struct snd_sof_pdata *plat_data);
-#else
-static void inline sof_virtio_vfe_init(struct snd_sof_dev *sdev,
-				       struct snd_sof_pdata *plat_data)
-{
-}
-#endif
-
 #endif	/* __SOUND_SOC_SOF_VIRTIO_FE_H */

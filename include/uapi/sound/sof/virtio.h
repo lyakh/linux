@@ -13,6 +13,8 @@
 #ifndef _SOF_VIRTIO_H
 #define _SOF_VIRTIO_H
 
+#include <sound/sof/header.h>
+
 /* Currently we defined 4 vqs to do the IPC, CMD_TX is for send the msg
  * from FE to BE, and CMD_RX is to receive the reply. NOT_RX is to receive
  * the notification, and NOT_TX is to send empty buffer from FE to BE.
@@ -38,5 +40,17 @@
 
 /* the vq to get the notification */
 #define SOF_VIRTIO_IPC_NOT_RX_VQ_NAME  "sof-ipc-not-rx"
+
+struct sof_vfe_ipc_tplg_req {
+	struct sof_ipc_cmd_hdr hdr;
+	char file_name[64];
+	size_t offset;
+} __packed;
+
+struct sof_vfe_ipc_tplg_resp {
+	struct sof_ipc_reply reply;
+	/* There exist topology files already larger than 40KiB */
+	uint8_t data[64 * 1024 - sizeof(struct sof_ipc_reply)];
+} __packed;
 
 #endif

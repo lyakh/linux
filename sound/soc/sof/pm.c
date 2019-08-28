@@ -59,7 +59,7 @@ static int sof_restore_kcontrols(struct snd_sof_dev *sdev)
 	return 0;
 }
 
-static int sof_restore_pipelines(struct snd_sof_dev *sdev)
+int sof_restore_pipelines(struct snd_sof_dev *sdev)
 {
 	struct snd_sof_widget *swidget;
 	struct snd_sof_route *sroute;

@@ -14,7 +14,6 @@
 #include <sound/soc.h>
 #include <sound/sof.h>
 #include "sof-priv.h"
-#include "virtio-fe.h"
 #include "ops.h"
 
 /* SOF defaults if not provided by the platform in ms */
@@ -68,6 +67,7 @@ struct snd_sof_pcm *snd_sof_find_spcm_comp(struct snd_sof_dev *sdev,
 
 	return NULL;
 }
+EXPORT_SYMBOL(snd_sof_find_spcm_comp);
 
 struct snd_sof_pcm *snd_sof_find_spcm_pcm_id(struct snd_sof_dev *sdev,
 					     unsigned int pcm_id)
@@ -307,17 +307,13 @@ static int sof_dsp_start(struct snd_sof_dev *sdev)
 		goto fw_run_err;
 	}
 
-	if (IS_ENABLED(CONFIG_SND_SOC_SOF_DEBUG_ENABLE_FIRMWARE_TRACE)) {
-		/* init DMA trace */
-		ret = snd_sof_init_trace(sdev);
-		if (ret < 0) {
-			/* non fatal */
-			dev_warn(sdev->dev,
-				 "warning: failed to initialize trace %d\n",
-				 ret);
-		}
-	} else {
-		dev_dbg(sdev->dev, "SOF firmware trace disabled\n");
+	/* init DMA trace */
+	ret = snd_sof_init_trace(sdev);
+	if (ret < 0) {
+		/* non fatal */
+		dev_warn(sdev->dev,
+			 "warning: failed to initialize trace %d\n",
+			 ret);
 	}
 
 	return 0;
@@ -369,6 +365,11 @@ static int sof_probe_continue(struct snd_sof_dev *sdev)
 		goto dbg_err;
 	}
 
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_VIRTIO_BE)
+	/* optionally register virtio miscdev */
+	sof_virtio_miscdev_register(sdev);
+#endif
+
 	/* init the IPC */
 	sdev->ipc = snd_sof_ipc_init(sdev);
 	if (!sdev->ipc) {
@@ -376,10 +377,8 @@ static int sof_probe_continue(struct snd_sof_dev *sdev)
 		goto ipc_err;
 	}
 
-	sof_virtio_vfe_init(sdev, plat_data);
-
 	/* virtio front-end mode will not touch HW, skip fw loading */
-	if (!sdev->is_vfe) {
+	if (!plat_data->vfe) {
 		ret = sof_dsp_start(sdev);
 		if (ret < 0)
 			goto fw_load_err;
@@ -427,6 +426,9 @@ fw_run_err:
 fw_load_err:
 	snd_sof_ipc_free(sdev);
 ipc_err:
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_VIRTIO_BE)
+	sof_virtio_miscdev_unregister();
+#endif
 	snd_sof_free_debug(sdev);
 dbg_err:
 	snd_sof_remove(sdev);
@@ -509,8 +511,11 @@ int snd_sof_device_remove(struct device *dev)
 		cancel_work_sync(&sdev->probe_work);
 
 	snd_sof_ipc_free(sdev);
+#if IS_ENABLED(CONFIG_SND_SOC_SOF_VIRTIO_BE)
+	sof_virtio_miscdev_unregister();
+#endif
 	snd_sof_free_debug(sdev);
-	if (!sdev->is_vfe) {
+	if (!pdata->vfe) {
 		snd_sof_fw_unload(sdev);
 		snd_sof_free_trace(sdev);
 	}
@@ -524,7 +529,7 @@ int snd_sof_device_remove(struct device *dev)
 	if (!IS_ERR_OR_NULL(pdata->pdev_mach))
 		platform_device_unregister(pdata->pdev_mach);
 
-	if (!sdev->is_vfe) {
+	if (!pdata->vfe) {
 		/* release firmware */
 		release_firmware(pdata->fw);
 		pdata->fw = NULL;

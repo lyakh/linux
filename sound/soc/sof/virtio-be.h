@@ -34,6 +34,8 @@ struct sof_vbe {
 	struct list_head posn_list;
 
 	struct list_head list;
+
+	const struct firmware *fw;
 };
 
 struct sof_vbe_client {

@@ -12,6 +12,7 @@
 #define __SOUND_SOC_SOF_PRIV_H
 
 #include <linux/device.h>
+#include <linux/workqueue.h>
 
 #include <sound/hdaudio.h>
 #include <sound/soc.h>
@@ -198,6 +199,10 @@ struct snd_sof_dsp_ops {
 	int (*trace_trigger)(struct snd_sof_dev *sdev,
 			     int cmd); /* optional */
 
+	/* VirtIO operations */
+	int (*request_topology)(struct snd_sof_dev *sdev, const char *name,
+				struct firmware *fw); /* optional */
+
 	/* DAI ops */
 	struct snd_soc_dai_driver *drv;
 	int num_drv;
@@ -351,7 +356,7 @@ struct snd_sof_dai {
 };
 
 /*
- * in virtio iovec array:
+ * in virtio iovec array - OUT buffers before IN:
  *  iovec[0]: the ipc message data between vFE and vBE
  *  iovec[1]: the ipc reply data between vFE and vBE
  */
@@ -449,6 +454,18 @@ struct snd_sof_dev {
 	void *private;			/* core does not touch this */
 };
 
+/* SOF generic IPC data */
+struct snd_sof_ipc {
+	struct snd_sof_dev *sdev;
+
+	/* protects messages and the disable flag */
+	struct mutex tx_mutex;
+	/* disables further sending of ipc's */
+	bool disable_ipc_tx;
+
+	struct snd_sof_ipc_msg msg;
+};
+
 /*
  * Device Level.
  */
@@ -460,6 +477,7 @@ int snd_sof_runtime_suspend(struct device *dev);
 int snd_sof_runtime_resume(struct device *dev);
 int snd_sof_resume(struct device *dev);
 int snd_sof_suspend(struct device *dev);
+int sof_restore_pipelines(struct snd_sof_dev *sdev);
 
 void snd_sof_new_platform_drv(struct snd_sof_dev *sdev);
 
@@ -495,6 +513,9 @@ int snd_sof_ipc_valid(struct snd_sof_dev *sdev);
 int sof_ipc_tx_message(struct snd_sof_ipc *ipc, u32 header,
 		       void *msg_data, size_t msg_bytes, void *reply_data,
 		       size_t reply_bytes);
+int sof_ipc_tx_message_unlocked(struct snd_sof_ipc *ipc, u32 header,
+				void *msg_data, size_t msg_bytes,
+				void *reply_data, size_t reply_bytes);
 struct snd_sof_widget *snd_sof_find_swidget(struct snd_sof_dev *sdev,
 					    const char *name);
 struct snd_sof_widget *snd_sof_find_swidget_sname(struct snd_sof_dev *sdev,
@@ -682,5 +703,7 @@ int intel_pcm_open(struct snd_sof_dev *sdev,
 		   struct snd_pcm_substream *substream);
 int intel_pcm_close(struct snd_sof_dev *sdev,
 		    struct snd_pcm_substream *substream);
+
+void sof_pcm_period_elapsed_work(struct work_struct *work);
 
 #endif

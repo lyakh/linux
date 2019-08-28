@@ -3148,12 +3148,19 @@ EXPORT_SYMBOL(snd_sof_init_topology);
 
 int snd_sof_load_topology(struct snd_sof_dev *sdev, const char *file)
 {
+	struct firmware vfe_fw;
 	const struct firmware *fw;
 	int ret;
 
 	dev_dbg(sdev->dev, "loading topology:%s\n", file);
 
-	ret = request_firmware(&fw, file, sdev->dev);
+	if (sdev->pdata->vfe) {
+		fw = &vfe_fw;
+		ret = sof_ops(sdev)->request_topology(sdev, file, &vfe_fw);
+	} else {
+		ret = request_firmware(&fw, file, sdev->dev);
+	}
+
 	if (ret < 0) {
 		dev_err(sdev->dev, "error: tplg request firmware %s failed err: %d\n",
 			file, ret);
@@ -3169,7 +3176,9 @@ int snd_sof_load_topology(struct snd_sof_dev *sdev, const char *file)
 		ret = -EINVAL;
 	}
 
-	release_firmware(fw);
+	if (!sdev->pdata->vfe)
+		release_firmware(fw);
+
 	return ret;
 }
 EXPORT_SYMBOL(snd_sof_load_topology);

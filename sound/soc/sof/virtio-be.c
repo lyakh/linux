@@ -16,24 +16,30 @@
  * virtio_vq_*		- drivers/vbs (to be deprecated)
  */
 
-#include <linux/module.h>
-#include <linux/miscdevice.h>
-#include <linux/fs.h>
-#include <linux/file.h>
-#include <linux/hw_random.h>
-#include <linux/uio.h>
-#include <linux/slab.h>
-#include <linux/vmalloc.h>
 #include <linux/device.h>
-#include <sound/sof.h>
+#include <linux/file.h>
+#include <linux/firmware.h>
+#include <linux/fs.h>
+#include <linux/hw_random.h>
+#include <linux/miscdevice.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/uio.h>
+#include <linux/vmalloc.h>
+#include <linux/workqueue.h>
+
 #include <sound/pcm_params.h>
+#include <sound/sof.h>
+
 //#include <uapi/sound/sof-ipc.h>
-#include <linux/vbs/vq.h>
 #include <linux/vbs/vbs.h>
+#include <linux/vbs/vq.h>
+
 #include <linux/vhm/acrn_common.h>
 #include <linux/vhm/acrn_vhm_ioreq.h>
 #include <linux/vhm/acrn_vhm_mm.h>
 #include <linux/vhm/vhm_vm_mngt.h>
+
 #include "sof-priv.h"
 #include "ops.h"
 #include "virtio-be.h"
@@ -241,7 +247,7 @@ static int sbe_pcm_open(struct snd_sof_dev *sdev,
 	 * As there is no FE link substream in SOS for UOS (UOS FE link
 	 * substreams are created in UOS and SOS will never see it), let's
 	 * use BE link substream in SOS for the callbacks.
-	 * This is save because the BE link substream is created dedicated for
+	 * This is safe because the BE link substream is created dedicated for
 	 * UOS in machine driver.
 	 */
 	struct snd_pcm_substream *substream;
@@ -354,9 +360,9 @@ static int sbe_pcm_close(struct snd_sof_dev *sdev,
  * into a page table of SOS physical pages. It should leave the HDA stream
  * alone for HDA code to manage.
  */
-static int sbe_stream_prepare(struct snd_sof_dev *sdev,
-			      struct sof_ipc_pcm_params *pcm, int vm_id,
-			      struct snd_sg_page *table)
+static void sbe_stream_prepare(struct snd_sof_dev *sdev,
+			       struct sof_ipc_pcm_params *pcm, int vm_id,
+			       struct snd_sg_page *table)
 {
 	u32 pcm_buffer_gpa = pcm->params.buffer.phy_addr;
 	u64 pcm_buffer_hpa = vhm_vm_gpa2hpa(vm_id, (u64)pcm_buffer_gpa);
@@ -367,7 +373,7 @@ static int sbe_stream_prepare(struct snd_sof_dev *sdev,
 
 	pages = pcm->params.buffer.pages;
 	for (i = 0; i < pages; i++) {
-		idx = (((i << 2) + i)) >> 1;
+		idx = i * 5 / 2;
 		gpa_parse = page_table[idx] | (page_table[idx + 1] << 8)
 			| (page_table[idx + 2] << 16);
 
@@ -380,8 +386,6 @@ static int sbe_stream_prepare(struct snd_sof_dev *sdev,
 
 		table[i].addr = hpa_parse;
 	}
-
-	return 0;
 }
 
 static int sbe_assemble_params(struct sof_ipc_pcm_params *pcm,
@@ -455,13 +459,12 @@ static int sbe_stream_hw_params(struct snd_sof_dev *sdev,
 	/* TODO: codec hw_params */
 
 	/* convert buffer GPA to HPA */
-	ret = sbe_stream_prepare(sdev, pcm, vm_id, table);
+	sbe_stream_prepare(sdev, pcm, vm_id, table);
 
 	/* Use different stream_tag from FE. This is the real tag */
 	sbe_assemble_params(pcm, &params);
-	pcm->params.stream_tag =
-		snd_sof_pcm_platform_hw_params(sdev, substream, &params,
-					       &pcm->params);
+	ret = snd_sof_pcm_platform_hw_params(sdev, substream, &params,
+					     &pcm->params);
 	dev_dbg(sdev->dev, "stream_tag %d", pcm->params.stream_tag);
 
 	kfree(table);
@@ -470,7 +473,7 @@ static int sbe_stream_hw_params(struct snd_sof_dev *sdev,
 }
 
 /* handle the stream ipc */
-static int sbe_ipc_stream_codec(struct snd_sof_dev *sdev, int vm_id,
+static int sbe_ipc_stream_codec(struct snd_sof_dev *sdev,
 				struct sof_ipc_cmd_hdr *hdr)
 {
 //	struct sof_ipc_pcm_params *pcm;
@@ -527,14 +530,16 @@ static int sbe_ipc_stream(struct snd_sof_dev *sdev, int vm_id,
 	struct snd_pcm_substream *substream;
 	struct snd_soc_dai *codec_dai;
 	const struct snd_soc_dai_ops *ops;
-	int ret, direction, comp_id, i;
+	int ret = 0, direction, comp_id, i;
 	u32 cmd = hdr->cmd & SOF_CMD_TYPE_MASK;
 
 	/* TODO validate host comp id range based on vm_id */
 
 	switch (cmd) {
 	case SOF_IPC_STREAM_PCM_PARAMS:
-		sbe_pcm_open(sdev, hdr, vm_id);
+		ret = sbe_pcm_open(sdev, hdr, vm_id);
+		if (ret < 0)
+			break;
 		pcm = (struct sof_ipc_pcm_params *)hdr;
 		ret = sbe_stream_hw_params(sdev, pcm, vm_id);
 		break;
@@ -545,12 +550,14 @@ static int sbe_ipc_stream(struct snd_sof_dev *sdev, int vm_id,
 		substream = sbe_get_substream(sdev, &rtd, direction);
 		snd_sof_pcm_platform_trigger(sdev, substream,
 					     SNDRV_PCM_TRIGGER_START);
+		pm_runtime_get_noresume(sdev->dev);
 		break;
 	case SOF_IPC_STREAM_TRIG_STOP:
 		stream = (struct sof_ipc_stream *)hdr;
 		comp_id = stream->comp_id;
 		snd_sof_find_spcm_comp(sdev, comp_id, &direction);
 		substream = sbe_get_substream(sdev, &rtd, direction);
+		pm_runtime_put_noidle(sdev->dev);
 		for (i = 0; i < rtd->num_codecs; i++) {
 			codec_dai = rtd->codec_dais[i];
 			ops = codec_dai->driver->ops;
@@ -584,12 +591,13 @@ static int sbe_ipc_stream(struct snd_sof_dev *sdev, int vm_id,
 		break;
 	}
 
-	return 0;
+	return ret;
 }
 
-static int sbe_ipc_tplg_comp_new(struct snd_sof_dev *sdev, int vm_id,
+static int sbe_ipc_tplg_comp_new(struct sof_vbe *vbe,
 				 struct sof_ipc_cmd_hdr *hdr)
 {
+	struct snd_sof_dev *sdev = vbe->sdev;
 	struct snd_sof_pcm *spcm;
 	struct sof_ipc_comp *comp = (struct sof_ipc_comp *)hdr;
 	struct sof_ipc_comp_host *host;
@@ -598,14 +606,14 @@ static int sbe_ipc_tplg_comp_new(struct snd_sof_dev *sdev, int vm_id,
 	case SOF_COMP_HOST:
 		/*
 		 * TODO: below is a temporary solution. next step is
-		 * to create a whole pcm staff incluing substream
+		 * to create a whole pcm stuff incluing substream
 		 * based on Liam's suggestion.
 		 */
 
 		/*
 		 * let's create spcm in HOST ipc
 		 * spcm should be created in pcm load, but there is no such ipc
-		 * so let create it here
+		 * so we create it here
 		 */
 		host = (struct sof_ipc_comp_host *)hdr;
 		spcm = kzalloc(sizeof(*spcm), GFP_KERNEL);
@@ -619,24 +627,124 @@ static int sbe_ipc_tplg_comp_new(struct snd_sof_dev *sdev, int vm_id,
 			SOF_VIRTIO_COMP_ID_UNASSIGNED;
 //		mutex_init(&spcm->mutex);
 		spcm->stream[host->direction].comp_id = host->comp.id;
+		INIT_WORK(&spcm->stream[host->direction].period_elapsed_work,
+			  sof_pcm_period_elapsed_work);
+		dev_dbg(sdev->dev, "%s(): init %p\n", __func__,
+			&spcm->stream[host->direction].period_elapsed_work);
 		list_add(&spcm->list, &sdev->pcm_list);
 		break;
 	default:
 		break;
 	}
+
 	return 0;
 }
 
+static int sbe_ipc_tplg_comp_id(struct sof_vbe *vbe, struct sof_ipc_cmd_hdr *hdr,
+				void *reply_buf, size_t reply_sz)
+{
+	struct sof_vfe_ipc_tplg_resp *partdata = reply_buf;
+
+	partdata->reply.hdr.cmd = hdr->cmd;
+	partdata->reply.hdr.size = sizeof(partdata->reply) + sizeof(u32);
+	partdata->reply.error = 0;
+	*(u32 *)partdata->data = vbe->sdev->next_comp_id;
+
+	vbe->comp_id_begin = vbe->sdev->next_comp_id;
+	vbe->comp_id_end = vbe->comp_id_begin + SOF_VIRTIO_MAX_UOS_COMPS;
+
+	return 0;
+}
+
+static int sbe_ipc_tplg_read(struct sof_vbe *vbe, struct sof_ipc_cmd_hdr *hdr,
+			     void *reply_buf, size_t reply_sz)
+{
+	struct snd_sof_dev *sdev = vbe->sdev;
+	struct sof_vfe_ipc_tplg_req *tplg = (struct sof_vfe_ipc_tplg_req *)hdr;
+	struct sof_vfe_ipc_tplg_resp *partdata = reply_buf;
+	const struct firmware *fw;
+	size_t to_send;
+	int ret;
+
+	if (reply_sz <= sizeof(partdata->reply)) {
+		/* FIXME: send an error response */
+		return -ENOBUFS;
+	}
+
+	if (!tplg->offset) {
+		ret = pm_runtime_get_sync(sdev->dev);
+		if (ret < 0) {
+			dev_err_ratelimited(sdev->dev,
+					    "error: failed to resume: %d\n",
+					    ret);
+			pm_runtime_put_noidle(sdev->dev);
+			return ret;
+		}
+
+		ret = request_firmware(&fw, tplg->file_name, sdev->dev);
+		if (ret < 0) {
+			dev_err(sdev->dev,
+				"error: request VFE topology %s failed: %d\n",
+				tplg->file_name, ret);
+			return ret;
+		}
+
+		vbe->fw = fw;
+	} else if (vbe->fw) {
+		fw = vbe->fw;
+	} else {
+		/* FIXME: send an error response */
+		return -EINVAL;
+	}
+
+	partdata->reply.hdr.cmd = hdr->cmd;
+	/*
+	 * Non-standard size use: it's the remaining firmware bytes, without
+	 * the header
+	 */
+	partdata->reply.hdr.size = fw->size - tplg->offset;
+
+	to_send = min_t(size_t, reply_sz - sizeof(partdata->reply),
+			partdata->reply.hdr.size);
+
+//	dev_dbg(sdev->dev, "Topology %s of 0x%x 0x%x offset %zu remaining %u request from %d\n",
+//		tplg->file_name,
+//		*(u32 *)(fw->data + tplg->offset),
+//		*(u32 *)(fw->data + tplg->offset + to_send - 4),
+//		tplg->offset, partdata->hdr.size, vbe->vm_id);
+	memcpy(partdata->data, fw->data + tplg->offset, to_send);
+
+	if (partdata->reply.hdr.size == to_send) {
+		release_firmware(fw);
+		vbe->fw = NULL;
+		pm_runtime_mark_last_busy(sdev->dev);
+		pm_runtime_put_autosuspend(sdev->dev);
+	}
+
+	return ret;
+}
+
 /* validate topology IPC */
-static int sbe_ipc_tplg(struct snd_sof_dev *sdev, int vm_id,
-			struct sof_ipc_cmd_hdr *hdr)
+static int sbe_ipc_tplg(struct sof_vbe *vbe, struct sof_ipc_cmd_hdr *hdr,
+			void *reply_buf, size_t reply_sz)
 {
 	/* TODO validate host comp id range based on vm_id */
 	u32 cmd = hdr->cmd & SOF_CMD_TYPE_MASK;
+	int ret;
 
 	switch (cmd) {
 	case SOF_IPC_TPLG_COMP_NEW:
-		return sbe_ipc_tplg_comp_new(sdev, vm_id, hdr);
+		return sbe_ipc_tplg_comp_new(vbe, hdr);
+	case SOF_IPC_TPLG_VFE_GET:
+		ret = sbe_ipc_tplg_read(vbe, hdr, reply_buf, reply_sz);
+		if (ret < 0)
+			return ret;
+		return 1;
+	case SOF_IPC_TPLG_VFE_COMP_ID:
+		ret = sbe_ipc_tplg_comp_id(vbe, hdr, reply_buf, reply_sz);
+		if (ret < 0)
+			return ret;
+		return 1;
 	}
 
 	return 0;
@@ -662,10 +770,7 @@ static int sbe_ipc_stream_param_post(struct snd_sof_dev *sdev,
 	return ret;
 }
 
-/*
- * For some IPCs, the reply needs to be handled.
- * This function is used to handle the replies of these IPCs.
- */
+/* For some IPCs, the reply needs to be handled. */
 static int sbe_ipc_post(struct snd_sof_dev *sdev,
 			void *ipc_buf, void *reply_buf)
 {
@@ -680,6 +785,9 @@ static int sbe_ipc_post(struct snd_sof_dev *sdev,
 			return sbe_ipc_stream_param_post(sdev,
 							 ipc_buf, reply_buf);
 		}
+
+		/* setup the codec */
+		return sbe_ipc_stream_codec(sdev, hdr);
 	}
 
 	return 0;
@@ -690,10 +798,11 @@ static int sbe_ipc_post(struct snd_sof_dev *sdev,
  * TODO rename function name, not submit but consume
  * TODO add topology ipc support and manage the multiple pcm and vms
  */
-static int sbe_ipc_fwd(struct snd_sof_dev *sdev, int vm_id,
+static int sbe_ipc_fwd(struct sof_vbe *vbe,
 		       void *ipc_buf, void *reply_buf,
 		       size_t count, size_t reply_sz)
 {
+	struct snd_sof_dev *sdev = vbe->sdev;
 	struct sof_ipc_cmd_hdr *hdr = ipc_buf;
 	u32 type;
 	int ret = 0;
@@ -704,19 +813,31 @@ static int sbe_ipc_fwd(struct snd_sof_dev *sdev, int vm_id,
 		return -EINVAL;
 	}
 
+	ret = pm_runtime_get_sync(sdev->dev);
+	if (ret < 0) {
+		dev_err_ratelimited(sdev->dev,
+				    "error: failed to resume: %d\n",
+				    ret);
+		pm_runtime_put_noidle(sdev->dev);
+		return ret;
+	}
+
 	type = hdr->cmd & SOF_GLB_TYPE_MASK;
 
 	/* validate the ipc */
 	switch (type) {
 	case SOF_IPC_GLB_COMP_MSG:
-		ret = sbe_ipc_comp(sdev, vm_id, hdr);
+		ret = sbe_ipc_comp(sdev, vbe->vm_id, hdr);
 		if (ret < 0)
-			return ret;
+			goto pm_put;
 		break;
 	case SOF_IPC_GLB_STREAM_MSG:
-		ret = sbe_ipc_stream(sdev, vm_id, hdr);
-		if (ret < 0)
-			return ret;
+		ret = sbe_ipc_stream(sdev, vbe->vm_id, hdr);
+		if (ret < 0) {
+			dev_err(sdev->dev, "STREAM IPC 0x%x failed %d!\n",
+				type, ret);
+			goto pm_put;
+		}
 		break;
 	case SOF_IPC_GLB_DAI_MSG:
 		/*
@@ -725,13 +846,15 @@ static int sbe_ipc_fwd(struct snd_sof_dev *sdev, int vm_id,
 		 */
 		break;
 	case SOF_IPC_GLB_TPLG_MSG:
-		ret = sbe_ipc_tplg(sdev, vm_id, hdr);
-		if (ret < 0)
-			return ret;
-		break;
+		ret = sbe_ipc_tplg(vbe, hdr, reply_buf, reply_sz);
+		if (!ret)
+			break;
+		if (ret > 0)
+			ret = 0;
+		goto pm_put;
 	case SOF_IPC_GLB_TRACE_MSG:
 		/* Trace should be initialized in SOS, skip FE requirement */
-		return 0;
+		goto pm_put;
 	default:
 		dev_info(sdev->dev, "unhandled IPC 0x%x!\n", type);
 		break;
@@ -739,21 +862,22 @@ static int sbe_ipc_fwd(struct snd_sof_dev *sdev, int vm_id,
 
 	/* now send the IPC */
 	ret = sof_virtio_send_ipc(sdev, ipc_buf, reply_buf, count, reply_sz);
+
+	pm_runtime_mark_last_busy(sdev->dev);
+	pm_runtime_put_autosuspend(sdev->dev);
+
 	if (ret < 0) {
-		dev_err(sdev->dev, "err: failed to send virtio IPC %d\n", ret);
+		dev_err(sdev->dev, "err: failed to send %u bytes virtio IPC 0x%x: %d\n",
+			hdr->size, hdr->cmd, ret);
 		return ret;
 	}
 
 	/* For some IPCs, the reply needs to be handled */
-	ret = sbe_ipc_post(sdev, ipc_buf, reply_buf);
+	return sbe_ipc_post(sdev, ipc_buf, reply_buf);
 
-	switch (type) {
-	case SOF_IPC_GLB_STREAM_MSG:
-		/* setup the codec */
-		ret = sbe_ipc_stream_codec(sdev, vm_id, hdr);
-		if (ret < 0)
-			return ret;
-	}
+pm_put:
+	pm_runtime_mark_last_busy(sdev->dev);
+	pm_runtime_put_autosuspend(sdev->dev);
 
 	return ret;
 }
@@ -768,10 +892,8 @@ static void sbe_ipc_fe_cmd_get(struct sof_vbe *vbe, int vq_idx)
 	void *ipc_buf;
 	void *reply_buf;
 	size_t len1, len2;
-	int vm_id;
 	int ret, i;
 
-	vm_id = vbe->vm_id;
 	memset(iov, 0, sizeof(iov));
 
 	/* while there are mesages in virtio queue */
@@ -792,10 +914,10 @@ static void sbe_ipc_fe_cmd_get(struct sof_vbe *vbe, int vq_idx)
 			dev_err(dev, "ipc buf and reply buf not paired\n");
 
 			/* no enough items, let drop this kick */
-			for (i = 0; i <= ret; i++) {
+			for (i = 0; i <= ret; i++)
 				virtio_vq_relchain(vq, idx + i,
 						   iov[i].iov_len);
-			}
+
 			virtio_vq_endchains(vq, 1);
 			return;
 		}
@@ -817,10 +939,10 @@ static void sbe_ipc_fe_cmd_get(struct sof_vbe *vbe, int vq_idx)
 			reply_buf = iov[SOF_VIRTIO_IPC_REPLY].iov_base;
 
 			/* send IPC to HW */
-			ret = sbe_ipc_fwd(vbe->sdev, vm_id, ipc_buf, reply_buf,
-					  len1, len2);
+			ret = sbe_ipc_fwd(vbe, ipc_buf,
+					  reply_buf, len1, len2);
 			if (ret < 0)
-				dev_err(dev, "submit guest ipc command fail\n");
+				dev_err(dev, "submit guest ipc error %d\n", ret);
 
 			virtio_vq_relchain(vq, idx, len1);
 			virtio_vq_relchain(vq, idx + 1, len2);
@@ -833,19 +955,23 @@ static void sbe_ipc_fe_cmd_get(struct sof_vbe *vbe, int vq_idx)
 
 static void handle_vq_kick(struct sof_vbe *vbe, int vq_idx)
 {
-	dev_dbg(vbe->sdev->dev, "vq_idx %d\n", vq_idx);
+//	dev_dbg(vbe->sdev->dev, "vq_idx %d\n", vq_idx);
 
 	switch (vq_idx) {
 	case SOF_VIRTIO_IPC_CMD_TX_VQ:
 		/* IPC command from FE to DSP */
-		return sbe_ipc_fe_cmd_get(vbe, vq_idx);
+		sbe_ipc_fe_cmd_get(vbe, vq_idx);
+		break;
 	case SOF_VIRTIO_IPC_CMD_RX_VQ:
+		/* Never entered */
 		/* IPC command reply from DSP to FE - NOT kick */
 		break;
 	case SOF_VIRTIO_IPC_NOT_TX_VQ:
 		/* IPC notification reply from FE to DSP */
-		return sbe_ipc_fe_not_reply_get(vbe, vq_idx);
+		sbe_ipc_fe_not_reply_get(vbe, vq_idx);
+		break;
 	case SOF_VIRTIO_IPC_NOT_RX_VQ:
+		/* Never entered */
 		/* IPC notification from DSP to FE - NOT kick */
 		break;
 	default:
@@ -873,7 +999,7 @@ static int handle_kick(int client_id, unsigned long *ioreqs_map)
 		return -EINVAL;
 	}
 
-	dev_dbg(sdev->dev, "virtio audio kick handling!\n");
+//	dev_dbg(sdev->dev, "virtio audio kick handling!\n");
 
 	/* get the client this notification is for/from? */
 	client = vbe_client_find(sdev, client_id);
@@ -906,16 +1032,14 @@ static int handle_kick(int client_id, unsigned long *ioreqs_map)
 			 req->reqs.pio_request.size,
 			 req->reqs.pio_request.value);
 
-		if (req->reqs.pio_request.direction == REQUEST_READ) {
+		if (req->reqs.pio_request.direction == REQUEST_READ)
 			/*
 			 * currently we handle kick only,
 			 * so read will return 0
 			 */
 			req->reqs.pio_request.value = 0;
-		} else {
-			req->reqs.pio_request.value >= 0 ?
-				(handle = 1) : (handle = 0);
-		}
+		else
+			handle = req->reqs.pio_request.value >= 0;
 
 		atomic_set(&req->processed, REQ_STATE_COMPLETE);
 
@@ -962,7 +1086,7 @@ int sof_vbe_register_client(struct sof_vbe *vbe)
 
 	/* handler is called in a thread context */
 	client->vhm_client_id = acrn_ioreq_create_client(vmid, handle_kick,
-							 "sof_vbe kick init\n");
+							 "sof_vbe kick init");
 	if (client->vhm_client_id < 0) {
 		dev_err(sdev->dev, "failed to create client of acrn ioreq!\n");
 		return client->vhm_client_id;
@@ -1072,6 +1196,8 @@ int sof_vbe_update_guest_posn(struct snd_sof_dev *sdev,
 	if (!vbe)
 		return 0;
 
+	dev_dbg(sdev->dev, "%s(): try to send position\n", __func__);
+
 	/*
 	 * let's try to get a notification RX vq available buffer
 	 * If there is an available buffer, let's notify immediately
@@ -1081,6 +1207,8 @@ int sof_vbe_update_guest_posn(struct snd_sof_dev *sdev,
 		if (!entry)
 			/* No endchain()? */
 			return -ENOMEM;
+
+		dev_dbg(sdev->dev, "%s(): no buffers\n", __func__);
 
 		spin_lock_irq(&vbe->posn_lock);
 
