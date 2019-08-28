@@ -137,6 +137,7 @@ irqreturn_t hda_dsp_ipc_irq_thread(int irq, void *context)
 {
 	struct snd_sof_dev *sdev = context;
 	irqreturn_t ret = IRQ_NONE;
+	bool host_msg = false;
 	u32 hipci;
 	u32 hipcie;
 	u32 hipct;
@@ -154,6 +155,40 @@ irqreturn_t hda_dsp_ipc_irq_thread(int irq, void *context)
 	/* reenable IPC interrupt */
 	snd_sof_dsp_update_bits(sdev, HDA_DSP_BAR, HDA_DSP_REG_ADSPIC,
 				HDA_DSP_ADSPIC_IPC, HDA_DSP_ADSPIC_IPC);
+
+	/* is this a new message from DSP */
+	if (hipct & HDA_DSP_REG_HIPCT_BUSY &&
+	    hipcctl & HDA_DSP_REG_HIPCCTL_BUSY) {
+
+		hipcte = snd_sof_dsp_read(sdev, HDA_DSP_BAR,
+					  HDA_DSP_REG_HIPCTE);
+		msg = hipct & HDA_DSP_REG_HIPCT_MSG_MASK;
+		msg_ext = hipcte & HDA_DSP_REG_HIPCTE_MSG_MASK;
+
+		dev_vdbg(sdev->dev,
+			 "ipc: firmware initiated, msg:0x%x, msg_ext:0x%x\n",
+			 msg, msg_ext);
+
+		/* mask BUSY interrupt */
+		snd_sof_dsp_update_bits(sdev, HDA_DSP_BAR,
+					HDA_DSP_REG_HIPCCTL,
+					HDA_DSP_REG_HIPCCTL_BUSY, 0);
+
+		/* handle messages from DSP */
+		if ((hipct & SOF_IPC_PANIC_MAGIC_MASK) == SOF_IPC_PANIC_MAGIC) {
+			/* this is a PANIC message !! */
+			snd_sof_dsp_panic(sdev, HDA_DSP_PANIC_OFFSET(msg_ext));
+			sdev->ipc->msg.reply_error = -ENODEV;
+			sdev->ipc->disable_ipc_tx = true;
+		} else {
+			/* normal message - process normally */
+			host_msg = true;
+		}
+
+		hda_dsp_ipc_host_done(sdev);
+
+		ret = IRQ_HANDLED;
+	}
 
 	/* is this a reply message from the DSP */
 	if (hipcie & HDA_DSP_REG_HIPCIE_DONE &&
@@ -190,37 +225,8 @@ irqreturn_t hda_dsp_ipc_irq_thread(int irq, void *context)
 		ret = IRQ_HANDLED;
 	}
 
-	/* is this a new message from DSP */
-	if (hipct & HDA_DSP_REG_HIPCT_BUSY &&
-	    hipcctl & HDA_DSP_REG_HIPCCTL_BUSY) {
-
-		hipcte = snd_sof_dsp_read(sdev, HDA_DSP_BAR,
-					  HDA_DSP_REG_HIPCTE);
-		msg = hipct & HDA_DSP_REG_HIPCT_MSG_MASK;
-		msg_ext = hipcte & HDA_DSP_REG_HIPCTE_MSG_MASK;
-
-		dev_vdbg(sdev->dev,
-			 "ipc: firmware initiated, msg:0x%x, msg_ext:0x%x\n",
-			 msg, msg_ext);
-
-		/* mask BUSY interrupt */
-		snd_sof_dsp_update_bits(sdev, HDA_DSP_BAR,
-					HDA_DSP_REG_HIPCCTL,
-					HDA_DSP_REG_HIPCCTL_BUSY, 0);
-
-		/* handle messages from DSP */
-		if ((hipct & SOF_IPC_PANIC_MAGIC_MASK) == SOF_IPC_PANIC_MAGIC) {
-			/* this is a PANIC message !! */
-			snd_sof_dsp_panic(sdev, HDA_DSP_PANIC_OFFSET(msg_ext));
-		} else {
-			/* normal message - process normally */
-			snd_sof_ipc_msgs_rx(sdev);
-		}
-
-		hda_dsp_ipc_host_done(sdev);
-
-		ret = IRQ_HANDLED;
-	}
+	if (host_msg)
+		snd_sof_ipc_msgs_rx(sdev);
 
 	return ret;
 }
